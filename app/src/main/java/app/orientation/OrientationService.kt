@@ -8,13 +8,13 @@ import android.graphics.PixelFormat
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.view.inputmethod.InputMethodManager
+import android.view.accessibility.AccessibilityWindowInfo
 
 /**
- * Watches which app is in the foreground and, if that app is configured,
- * adds an invisible accessibility overlay window that requests the desired
- * screen orientation. The system applies the top window's requested
- * orientation to the whole display, independent of the auto-rotate setting.
+ * Finds the top-most application window (the home screen counts too) and, only if
+ * that app is configured, adds an invisible accessibility overlay that requests the
+ * chosen orientation. For any other app the overlay is removed, so the system goes
+ * back to following the normal auto-rotate setting.
  */
 class OrientationService : AccessibilityService() {
 
@@ -22,33 +22,32 @@ class OrientationService : AccessibilityService() {
     private lateinit var prefs: SharedPreferences
     private var overlay: View? = null
     private var current = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-    private var ignored: Set<String> = emptySet()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         prefs = getSharedPreferences(Prefs.NAME, MODE_PRIVATE)
-        val ime = getSystemService(InputMethodManager::class.java)
-            .inputMethodList.map { it.packageName }
-        // The keyboard, status bar/notification shade and system dialogs
-        // must not change the orientation.
-        ignored = (ime + listOf("com.android.systemui", "android", packageName)).toSet()
+        evaluate()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        val pkg = event.packageName?.toString() ?: return
-        if (pkg in ignored) return
+        evaluate()
+    }
 
+    private fun foregroundPackage(): String? {
+        val all = windows ?: return null
+        val apps = all.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        // Prefer the active/focused app window (matters in split screen).
+        val top = apps.firstOrNull { it.isActive || it.isFocused } ?: apps.firstOrNull()
+        return top?.root?.packageName?.toString()
+    }
+
+    private fun evaluate() {
+        val pkg = foregroundPackage() ?: return
         val target = when (Prefs.get(prefs, pkg)) {
             Prefs.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             Prefs.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            else ->
-                // Regular app (or the home screen): go back to normal behavior.
-                // Packages without a launcher icon (system popups) are ignored.
-                if (packageManager.getLaunchIntentForPackage(pkg) != null)
-                    ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                else return
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
         applyOrientation(target)
     }
